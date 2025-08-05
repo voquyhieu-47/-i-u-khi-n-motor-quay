@@ -1,0 +1,22 @@
+int RPWM  = 9;   
+int LPWM  = 10;  
+int RPWM2 = 5;  
+int LPWM2 = 6;   
+
+void setup() {
+  pinMode(RPWM, OUTPUT);
+  pinMode(LPWM, OUTPUT);
+  pinMode(RPWM2, OUTPUT);
+  pinMode(LPWM2, OUTPUT);
+
+}
+
+void loop() {
+   analogWrite(RPWM, 185);  
+   analogWrite(LPWM, 0);    
+
+ 
+  analogWrite(RPWM2, 0);
+  analogWrite(LPWM2, 185);  
+  
+}
