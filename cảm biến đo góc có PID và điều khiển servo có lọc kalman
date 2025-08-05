@@ -1,0 +1,109 @@
+#include <Wire.h>
+#include "GY_85.h"
+#include "Kalman.h"
+
+// ===== SERVO HYBRID =====
+#define PUL 9
+#define DIR 8
+#define EN 7
+
+const float DEG_PER_STEP = 360.0 / 3200.0;
+const float MAX_ANGLE = 10.0;
+
+int currentStep = 0;
+
+// ===== CẢM BIẾN + KALMAN =====
+GY_85 sensor;
+Kalman kalman;
+
+float angle = 0;
+unsigned long lastTime = 0;
+const unsigned long controlInterval = 10; // ms
+
+// ===== PID =====
+float Kp = 30.0, Ki = 0.0, Kd = 3.0;
+float error = 0, last_error = 0;
+float integral = 0, derivative = 0;
+float output = 0;
+
+void setup() {
+  Wire.begin();
+  Serial.begin(115200);
+  sensor.init();
+
+  pinMode(PUL, OUTPUT);
+  pinMode(DIR, OUTPUT);
+  pinMode(EN, OUTPUT);
+  digitalWrite(EN, LOW); // enable driver
+
+  // Đọc góc ban đầu từ accelerometer
+  int ay_raw, az_raw;
+sensor.accelerometer_y(&ay_raw);
+sensor.accelerometer_z(&az_raw);
+float accAngle = atan2((float)ay_raw, (float)az_raw) * 180.0 / PI;
+
+  kalman.getAngle(accAngle, 0, 0.01);  // khởi tạo bộ lọc
+
+  lastTime = millis();
+}
+
+void loop() {
+  if (millis() - lastTime >= controlInterval) {
+    unsigned long now = millis();
+    float dt = (now - lastTime) / 1000.0;
+    lastTime = now;
+
+    int ay, az;
+sensor.accelerometer_y(&ay);
+sensor.accelerometer_z(&az);
+float accAngle = atan2((float)ay, (float)az) * 180.0 / PI;
+
+float* gyro = sensor.readGyro();
+float gyroRate = gyro[1];  // trục Y
+
+angle = kalman.getAngle(accAngle, gyroRate, dt);
+
+// PID
+error = -angle;
+integral += error * dt;
+derivative = (error - last_error) / dt;
+output = Kp * error + Ki * integral + Kd * derivative;
+last_error = error;
+
+
+    // Giới hạn
+    output = constrain(output, -100, 100);
+    int steps = abs(output);
+    if (steps < 1) steps = 1;
+
+    float motorAngle = currentStep * DEG_PER_STEP;
+    if (output > 1 && motorAngle <= MAX_ANGLE) {
+      digitalWrite(DIR, HIGH);
+      stepMotor(steps);
+    } else if (output < -1 && motorAngle >= -MAX_ANGLE) {
+      digitalWrite(DIR, LOW);
+      stepMotor(steps);
+    }
+
+    // Debug
+    Serial.print("Angle: "); Serial.print(angle, 2);
+    Serial.print(" | Output: "); Serial.print(output, 1);
+    Serial.print(" | Step: "); Serial.print(steps);
+    Serial.print(" | MotorAngle: "); Serial.println(motorAngle, 1);
+  }
+}
+
+void stepMotor(int steps) {
+  for (int i = 0; i < steps; i++) {
+    float motorAngle = currentStep * DEG_PER_STEP;
+    if ((digitalRead(DIR) == HIGH && motorAngle >= MAX_ANGLE) ||
+        (digitalRead(DIR) == LOW && motorAngle <= -MAX_ANGLE)) return;
+
+    digitalWrite(PUL, HIGH);
+    delayMicroseconds(500);
+    digitalWrite(PUL, LOW);
+    delayMicroseconds(500);
+
+    currentStep += (digitalRead(DIR) == HIGH) ? 1 : -1;
+  }
+}
