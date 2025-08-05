@@ -1,0 +1,123 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_ADXL345_U.h>
+
+Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+float alpha = 0;
+
+// ==== LỌC TRUNG BÌNH ====
+#define FILTER_SIZE 10
+float alpha_buffer[FILTER_SIZE];
+int filter_index = 0;
+
+// ==== PID ====
+float Kp = 12;
+float Ki = 0.3;
+float Kd = 6;
+
+float error = 0, last_error = 0;
+float integral = 0, derivative = 0;
+float output = 0;
+unsigned long lastTime;
+
+// ==== SERVO HYBRID ====
+const int PUL = 9;
+const int DIR = 8;
+const int EN  = 7;
+
+const float DEG_PER_STEP = 0.1125;     // 3200 step/vòng
+const float MAX_DEG = 90.0;            // Giới hạn quay vật lý ±90°
+const int MAX_STEPS = MAX_DEG / DEG_PER_STEP;
+int currentStep = 0;
+
+float smoothAlpha(float new_alpha) {
+  alpha_buffer[filter_index] = new_alpha;
+  filter_index = (filter_index + 1) % FILTER_SIZE;
+  float sum = 0;
+  for (int i = 0; i < FILTER_SIZE; i++) sum += alpha_buffer[i];
+  return sum / FILTER_SIZE;
+}
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+
+  if (!accel.begin()) {
+    Serial.println("Không tìm thấy cảm biến ADXL345!");
+    while (1);
+  }
+
+  accel.setRange(ADXL345_RANGE_2_G);
+
+  pinMode(PUL, OUTPUT);
+  pinMode(DIR, OUTPUT);
+  pinMode(EN, OUTPUT);
+  digitalWrite(EN, LOW);  // Kích hoạt driver
+
+  for (int i = 0; i < FILTER_SIZE; i++) alpha_buffer[i] = 0;
+
+  lastTime = millis();
+}
+
+void loop() {
+  // ==== ĐỌC CẢM BIẾN ====
+  sensors_event_t event;
+  accel.getEvent(&event);
+  float ay = event.acceleration.y;
+  float az = event.acceleration.z;
+  float raw_alpha = atan2(ay, az) * 180 / PI;
+  alpha = smoothAlpha(raw_alpha);  // Lọc trung bình
+
+  // ==== TÍNH PID ====
+  unsigned long now = millis();
+  float dt = (now - lastTime) / 1000.0;
+  lastTime = now;
+
+  error = alpha;  // ✅ sửa chiều sai số
+  if (abs(error) < 0.5) {
+    output = 0;  // Ngưỡng chết
+  } else {
+    integral += error * dt;
+    derivative = (error - last_error) / dt;
+    output = Kp * error + Ki * integral + Kd * derivative;
+    last_error = error;
+  }
+
+  // ==== GIỚI HẠN OUTPUT ====
+  output = constrain(output, -100, 100);
+  int stepsToMove = min(abs(output), 40);  // giới hạn bước mỗi lần
+
+  // ==== QUYẾT ĐỊNH HƯỚNG VÀ QUAY ====
+  if (output > 1) {
+    digitalWrite(DIR, LOW);  // quay trái (alpha dương → kéo trái lại)
+    stepMotor(stepsToMove);
+  } else if (output < -1) {
+    digitalWrite(DIR, HIGH);  // quay phải (alpha âm → kéo phải lại)
+    stepMotor(stepsToMove);
+  }
+
+  // ==== DEBUG ====
+  Serial.print("Alpha: "); Serial.print(alpha, 1);
+  Serial.print(" | Error: "); Serial.print(error, 1);
+  Serial.print(" | Output: "); Serial.print(output, 1);
+  Serial.print(" | Step: "); Serial.print(currentStep);
+  Serial.print(" | DIR: "); Serial.println(digitalRead(DIR) ? "R" : "L");
+
+  delay(5);
+}
+
+void stepMotor(int steps) {
+  for (int i = 0; i < steps; i++) {
+    // ==== GIỚI HẠN QUAY VẬT LÝ ====
+    if (digitalRead(DIR) == HIGH && currentStep >= MAX_STEPS) return;
+    if (digitalRead(DIR) == LOW && currentStep <= -MAX_STEPS) return;
+
+    digitalWrite(PUL, HIGH);
+    delayMicroseconds(600);
+    digitalWrite(PUL, LOW);
+    delayMicroseconds(600);
+
+    if (digitalRead(DIR) == HIGH) currentStep++;
+    else currentStep--;
+  }
+}
